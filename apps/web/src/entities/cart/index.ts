@@ -1,6 +1,9 @@
+export { mergeCartChanges } from "./model/changes";
 export {
+  type CartChanges,
   type CartItem,
   type OrderedLine,
+  type PriceChange,
   useCartCount,
   useCartStore,
   useCartSubmitting,

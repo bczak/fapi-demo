@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { useAdminOrders } from "@/entities/order";
+import { useAdminOrders, useRefreshAdminOrders } from "@/entities/order";
 import { authFailure, LoginForm, useAdminAuth, useSignOut } from "@/features/admin-auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { AdminOrdersTable, OrdersPager } from "@/widgets/admin-orders";
@@ -28,6 +28,7 @@ function Orders({ authorization }: { authorization: string }) {
   const signOut = useSignOut();
   const { data, error, isPending, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } =
     useAdminOrders(authorization);
+  const refresh = useRefreshAdminOrders();
   const hasOrders = data !== undefined;
 
   useEffect(() => {
@@ -58,6 +59,8 @@ function Orders({ authorization }: { authorization: string }) {
             isLoadingMore={isFetchingNextPage}
             loadMoreFailed={isFetchNextPageError}
             onLoadMore={() => fetchNextPage()}
+            autoRefresh={data.autoRefresh}
+            onRefresh={refresh}
           />
         </>
       )}

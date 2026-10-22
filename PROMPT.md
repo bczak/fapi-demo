@@ -43,6 +43,8 @@ I need to build the second-round assignment for a FAPI programmer position: a si
 - **React Doctor** with a score of 100/100, without disabling its rules.
 - **GitHub Actions**: one workflow for lint, typecheck and tests, and one that runs React Doctor on every push to `master` and prints the report in the run.
 - Fix the findings of a bug and security review: quantity limits after merging duplicate lines, idempotent order creation, no lost cart changes during checkout, UTF-8 admin credentials, no false promise of a confirmation email, strict validation of the ČNB data, paginated admin listing with an index, request limits and throttling, no credentials in the query cache, and frontend regression tests.
+- No TypeScript `any`; refactor it away wherever it shows up.
+- Once everything is green, ask the Codex CLI for an independent code review and a small audit, and fix whatever it finds.
 
 ## Documentation
 

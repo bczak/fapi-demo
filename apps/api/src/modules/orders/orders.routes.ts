@@ -1,4 +1,4 @@
-import { type CnbRates, createOrderSchema } from "@fapi/shared";
+import { type ApiErrorBody, type CnbRates, createOrderSchema } from "@fapi/shared";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { Db } from "../../db/client";
@@ -9,6 +9,7 @@ import {
   findOrderByKey,
   getOrder,
   IdempotencyConflictError,
+  PriceChangedError,
   QuantityLimitError,
   UnknownProductError,
   UnsupportedCurrencyError,
@@ -42,7 +43,13 @@ export function ordersRoutes(db: Db, getRates: () => Promise<CnbRates>) {
           return c.json(order, created ? 201 : 200);
         } catch (e) {
           // Only the message: the order behind the key belongs to someone else's request.
-          if (e instanceof IdempotencyConflictError) return c.json({ message: e.message }, 409);
+          if (e instanceof IdempotencyConflictError) {
+            return c.json({ message: e.message, code: "idempotency_conflict" } satisfies ApiErrorBody, 409);
+          }
+          // Nothing was saved, so the key stays free for the order at the new total.
+          if (e instanceof PriceChangedError) {
+            return c.json({ message: e.message, code: "price_changed" } satisfies ApiErrorBody, 409);
+          }
           if (
             e instanceof UnknownProductError ||
             e instanceof UnsupportedCurrencyError ||

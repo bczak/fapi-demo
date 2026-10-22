@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { CreateOrderInput, Order, OrderPage, Product, ProductPage } from "@fapi/shared";
+import {
+  type CreateOrderInput,
+  calcTotals,
+  type Order,
+  type OrderPage,
+  type Product,
+  type ProductPage,
+} from "@fapi/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../../app";
 import type { Db } from "../../db/client";
-import { orders } from "../../db/schema";
+import { orders, products } from "../../db/schema";
 import {
   ADMIN,
   basic,
@@ -12,10 +19,11 @@ import {
   orderBody,
   postJson,
   SAMPLE_RATES,
+  seededTotalOf,
   setup,
   validCustomer,
 } from "../../test-utils";
-import { createOrder, QuantityLimitError } from "./orders.service";
+import { createOrder, PriceChangedError, QuantityLimitError } from "./orders.service";
 
 type App = ReturnType<typeof setup>["app"];
 
@@ -43,8 +51,17 @@ const expectConflict = async (res: Response) => {
   expect(res.status).toBe(409);
   expect(await res.json()).toEqual({
     message: "This idempotency key was already used for a different order",
+    code: "idempotency_conflict",
   });
 };
+
+/** The shop changes the net price of product `id` to `priceMinor`. */
+const setPrice = (db: Db, id: number, priceMinor: number) =>
+  db.update(products).set({ priceMinor }).where(eq(products.id, id)).run();
+
+const priceOf = (db: Db, id: number) =>
+  db.select({ priceMinor: products.priceMinor }).from(products).where(eq(products.id, id)).get()
+    ?.priceMinor ?? 0;
 
 /** `db`, on which `rival` commits, like a concurrent request, between our key lookup and our insert. */
 const racingDb = (db: Db, rival: () => void) =>
@@ -396,6 +413,107 @@ describe("POST /api/orders - idempotency", () => {
     expect(first.status).toBe(201);
     expect(retry.status).toBe(200);
     expect(((await retry.json()) as Order).id).toBe(((await first.json()) as Order).id);
+  });
+});
+
+describe("POST /api/orders - the total the customer confirmed", () => {
+  const PRICE_CHANGED = {
+    message: "Prices have changed since you confirmed the order. Check the new total and pay again.",
+    code: "price_changed",
+  };
+
+  it("places the order at the total the customer confirmed", async () => {
+    const { app } = setup();
+    const body = orderBody({ items: [{ productId: 2, quantity: 3 }] });
+    const order = await placeOrder(app, body);
+    expect(order.totalMinor).toBe(body.expectedTotalMinor);
+  });
+
+  it("answers 409 price_changed and saves nothing when a price changed after the customer confirmed", async () => {
+    const { app, db } = setup();
+    const body = orderBody();
+    setPrice(db, 1, priceOf(db, 1) + 100);
+
+    const res = await app.request("/api/orders", postJson(body));
+
+    expect(res.status).toBe(409);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.json()).toEqual(PRICE_CHANGED);
+    expect(countOrders(db)).toBe(0);
+  });
+
+  it("keeps the key free: the order at the new total goes through with it", async () => {
+    const { app, db } = setup();
+    const body = orderBody();
+    setPrice(db, 1, priceOf(db, 1) + 100);
+    expect((await app.request("/api/orders", postJson(body))).status).toBe(409);
+
+    const newTotal = calcTotals([{ unitPriceMinor: priceOf(db, 1), quantity: 1 }]).totalMinor;
+    const res = await app.request("/api/orders", postJson({ ...body, expectedTotalMinor: newTotal }));
+
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as Order).totalMinor).toBe(newTotal);
+  });
+
+  it("returns a placed order to its retry after a price change, whatever total the retry expects", async () => {
+    const { app, db } = setup();
+    const body = orderBody();
+    const first = await placeOrder(app, body);
+    setPrice(db, 1, priceOf(db, 1) + 100);
+    const newTotal = calcTotals([{ unitPriceMinor: priceOf(db, 1), quantity: 1 }]).totalMinor;
+
+    for (const expectedTotalMinor of [body.expectedTotalMinor, newTotal]) {
+      const retry = await app.request("/api/orders", postJson({ ...body, expectedTotalMinor }));
+      expect(retry.status).toBe(200);
+      expect(((await retry.json()) as Order).id).toBe(first.id);
+    }
+    expect(countOrders(db)).toBe(1);
+  });
+
+  it("is the total in CZK, also for an order paid in EUR", async () => {
+    const { app } = setup();
+    const expectedTotalMinor = seededTotalOf([{ productId: 1, quantity: 1 }]);
+    const order = await placeOrder(app, { currency: "EUR", expectedTotalMinor });
+    expect(order.totalMinor).toBe(expectedTotalMinor);
+    expect(order.payment.totalMinor).not.toBe(expectedTotalMinor);
+  });
+
+  it("still places an order sent without it, as a page loaded before the check sends it", async () => {
+    const { app } = setup();
+    const { expectedTotalMinor: _omitted, ...unchecked } = orderBody();
+    expect((await app.request("/api/orders", postJson(unchecked))).status).toBe(201);
+  });
+
+  it("rejects a total that is not a whole number of haléře", async () => {
+    const { app, db } = setup();
+    for (const expectedTotalMinor of [-1, 30_250.5, "30250"]) {
+      const res = await app.request("/api/orders", postJson(orderBody({ expectedTotalMinor })));
+      expect(res.status).toBe(422);
+      const body = (await res.json()) as { issues: { path: string }[] };
+      expect(body.issues.map((i) => i.path)).toEqual(["expectedTotalMinor"]);
+    }
+    expect(countOrders(db)).toBe(0);
+  });
+
+  it("lets the service return a placed order to its retry before comparing totals", () => {
+    const { db } = setup();
+    const body = orderBody();
+    const input = { ...body, currency: "CZK" as const };
+    expect(createOrder(db, input).created).toBe(true);
+    setPrice(db, 1, priceOf(db, 1) + 100);
+
+    const retry = createOrder(db, input);
+
+    expect(retry.created).toBe(false);
+    expect(countOrders(db)).toBe(1);
+  });
+
+  it("is checked by the service too, for callers that skip the route", () => {
+    const { db } = setup();
+    const body = orderBody();
+    const input = { ...body, currency: "CZK" as const, expectedTotalMinor: body.expectedTotalMinor - 1 };
+    expect(() => createOrder(db, input)).toThrow(PriceChangedError);
+    expect(countOrders(db)).toBe(0);
   });
 });
 

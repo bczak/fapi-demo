@@ -122,4 +122,17 @@ describe("api: timeout", () => {
     });
     await expect(api("/products", productPageSchema, { timeoutMs: 1000 })).rejects.toThrow(TypeError);
   });
+
+  it("stops when the caller cancels, and does not call that a timeout", async () => {
+    const fetchMock = stubFetch({ "GET /api/products": hang });
+    const controller = new AbortController();
+
+    const request = api("/products", productPageSchema, { signal: controller.signal });
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    await expect(request).rejects.not.toBeInstanceOf(ApiTimeoutError);
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(init?.signal?.aborted).toBe(true);
+  });
 });

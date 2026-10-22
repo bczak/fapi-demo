@@ -1,4 +1,4 @@
-import { convertFromCzk, formatCurrency, formatRateDate } from "@fapi/shared";
+import { convertFromCzk, currencyDigits, formatCurrency, formatRateDate } from "@fapi/shared";
 import { useState } from "react";
 import { useRates } from "@/entities/exchange-rate";
 import { Label } from "@/shared/ui/label";
@@ -18,6 +18,8 @@ export function CurrencyConverter({ totalMinor }: { totalMinor: number }) {
 
   const rate = data.rates.find((r) => r.code === code) ?? data.rates[0];
   if (!rate) return null;
+  // Rounded once, to the decimals the currency is written with (3 for TND, 0 for JPY).
+  const converted = convertFromCzk(totalMinor, rate, currencyDigits(rate.code));
 
   return (
     <div className="grid gap-3">
@@ -38,7 +40,7 @@ export function CurrencyConverter({ totalMinor }: { totalMinor: number }) {
           </Select>
         </div>
         <p className="text-2xl font-semibold" data-testid="converted-total">
-          {formatCurrency(convertFromCzk(totalMinor, rate), rate.code)}
+          {formatCurrency(converted, rate.code)}
         </p>
       </div>
       <p className="text-muted-foreground text-xs">

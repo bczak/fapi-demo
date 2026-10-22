@@ -2,23 +2,33 @@ import {
   type Customer,
   formatMinor,
   formatRateDate,
-  type Order,
   PAYMENT_CURRENCIES,
   type PaymentCurrency,
   quotePayment,
 } from "@fapi/shared";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
 import { toast } from "sonner";
-import { CartTotals, useCartStore, useCartSubmitting, useCartTotals } from "@/entities/cart";
+import {
+  type CartChanges,
+  CartTotals,
+  useCartStore,
+  useCartSubmitting,
+  useCartTotals,
+} from "@/entities/cart";
 import { useRates } from "@/entities/exchange-rate";
 import { useCreateOrder } from "@/entities/order";
 import { ApiError, ApiTimeoutError } from "@/shared/api/client";
 import { Button } from "@/shared/ui/button";
-import { submitOrder } from "../model/submitOrder";
+import { repeatsAttempt } from "../model/idempotency";
+import { type ConfirmedOrder, type SubmitResult, submitOrder } from "../model/submitOrder";
 
 interface Props {
   customer: Customer;
+  /** Kept by the parent, so going back to shipping and forward again keeps the choice. */
+  currency: PaymentCurrency;
+  onCurrencyChange: (currency: PaymentCurrency) => void;
+  /** The cart changed under the order (undefined once Pay is pressed again, confirming the new total). */
+  onCartChange: (changes: CartChanges | undefined) => void;
   onBack: () => void;
   onPlaced: () => void;
 }
@@ -28,32 +38,42 @@ const FALLBACK_ERROR = "Could not place the order. Check your connection and try
 /**
  * Step 3 of the checkout: pick the payment currency. Other currencies than CZK are priced with the
  * live ČNB rate; the server calculates (and stores) the final amount when the order is placed.
+ * Without the rates they can only be paid as a retry of the order sent without an answer.
  * While the request is in flight everything on the cart and on this step is locked.
  */
-export function PaymentStep({ customer, onBack, onPlaced }: Props) {
+export function PaymentStep({ customer, currency, onCurrencyChange, onCartChange, onBack, onPlaced }: Props) {
   const navigate = useNavigate();
   const items = useCartStore((s) => s.items);
   const submitting = useCartSubmitting();
   const totals = useCartTotals();
   const rates = useRates();
   const createOrder = useCreateOrder();
-  const [currency, setCurrency] = useState<PaymentCurrency>("CZK");
 
-  const options = PAYMENT_CURRENCIES.map((code) => ({
-    code,
-    quote: quotePayment(totals.totalMinor, code, rates.data),
-  }));
-  const selected = options.find((o) => o.code === currency)?.quote;
+  // The total on the Pay button is the one the customer confirms; the server places the order at no other.
+  const orderIn = (code: PaymentCurrency): ConfirmedOrder => ({
+    customer,
+    currency: code,
+    items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+    expectedTotalMinor: totals.totalMinor,
+  });
+
+  const options = PAYMENT_CURRENCIES.map((code) => {
+    const quote = quotePayment(totals.totalMinor, code, rates.data);
+    // Without rates, the order sent without an answer (e.g. before a reload) can still be sent again:
+    // the server answers it from its key, and needs the rates only if that order never got through.
+    const retry = !quote && !rates.isPending && repeatsAttempt(orderIn(code));
+    return { code, quote, retry };
+  });
+  const chosen = options.find((o) => o.code === currency);
+  const selected = chosen?.quote;
+  const retry = chosen?.retry ?? false;
 
   async function placeOrder() {
-    const snapshot = {
-      customer,
-      currency,
-      items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
-    };
-    let order: Order;
+    // Paying with changes on show confirms them; new ones come back in the result.
+    onCartChange(undefined);
+    let result: SubmitResult;
     try {
-      order = await submitOrder(snapshot, createOrder.mutateAsync);
+      result = await submitOrder(orderIn(currency), createOrder.mutateAsync);
     } catch (e) {
       // The client's own errors read well; the browser's (e.g. "Failed to fetch") do not.
       const readable = e instanceof ApiError || e instanceof ApiTimeoutError;
@@ -62,8 +82,18 @@ export function PaymentStep({ customer, onBack, onPlaced }: Props) {
       });
       return;
     }
+    if ("changes" in result) {
+      onCartChange(result.changes);
+      return;
+    }
     onPlaced();
-    await navigate({ to: "/thank-you/$orderId", params: { orderId: order.id } });
+    await navigate({ to: "/thank-you/$orderId", params: { orderId: result.order.id } });
+  }
+
+  function payLabel() {
+    if (submitting) return "Placing order…";
+    if (selected) return `Pay ${formatMinor(selected.totalMinor, selected.currency)}`;
+    return retry ? "Retry payment" : "Place order";
   }
 
   return (
@@ -72,7 +102,7 @@ export function PaymentStep({ customer, onBack, onPlaced }: Props) {
 
       <fieldset className="grid gap-2">
         <legend className="mb-2 text-sm font-medium">Payment currency</legend>
-        {options.map(({ code, quote }) => (
+        {options.map(({ code, quote, retry: retryable }) => (
           <label
             key={code}
             className="flex cursor-pointer items-center justify-between rounded-lg border p-4 has-checked:border-primary has-checked:bg-accent has-disabled:cursor-not-allowed has-disabled:opacity-50 has-focus-visible:ring-[3px] has-focus-visible:ring-ring/50"
@@ -83,8 +113,8 @@ export function PaymentStep({ customer, onBack, onPlaced }: Props) {
               value={code}
               className="sr-only"
               checked={currency === code}
-              disabled={!quote || submitting}
-              onChange={() => setCurrency(code)}
+              disabled={!(quote || retryable) || submitting}
+              onChange={() => onCurrencyChange(code)}
             />
             <span className="font-medium">{code}</span>
             <span className="tabular-nums">
@@ -104,6 +134,12 @@ export function PaymentStep({ customer, onBack, onPlaced }: Props) {
             Exchange rates are currently unavailable, you can still pay in CZK.
           </p>
         )}
+        {retry && (
+          <p className="text-muted-foreground text-xs">
+            Your payment in {currency} was sent but got no answer. You can retry it without the exchange rate:
+            the amount is shown once the order is confirmed.
+          </p>
+        )}
       </fieldset>
 
       <p className="text-muted-foreground text-xs">Demo shop: nothing is charged.</p>
@@ -112,12 +148,8 @@ export function PaymentStep({ customer, onBack, onPlaced }: Props) {
         <Button variant="outline" size="lg" onClick={onBack} disabled={submitting}>
           Back
         </Button>
-        <Button size="lg" onClick={placeOrder} disabled={submitting || !selected}>
-          {submitting
-            ? "Placing order…"
-            : selected
-              ? `Pay ${formatMinor(selected.totalMinor, selected.currency)}`
-              : "Place order"}
+        <Button size="lg" onClick={placeOrder} disabled={submitting || !(selected || retry)}>
+          {payLabel()}
         </Button>
       </div>
     </div>

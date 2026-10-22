@@ -1,4 +1,4 @@
-import { PRODUCTS_PAGE_SIZE, productPageSchema } from "@fapi/shared";
+import { PRODUCTS_PAGE_SIZE, type Product, productPageSchema } from "@fapi/shared";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/shared/api/client";
 
@@ -14,3 +14,9 @@ export const useProducts = () =>
       return loaded < last.total ? loaded : undefined;
     },
   });
+
+/** The products with these ids as they are now; the ones that no longer exist are left out. */
+export async function fetchProductsByIds(ids: readonly number[]): Promise<Product[]> {
+  const page = await api(`/products?ids=${ids.join(",")}`, productPageSchema);
+  return page.items;
+}

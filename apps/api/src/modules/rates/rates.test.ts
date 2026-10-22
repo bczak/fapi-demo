@@ -79,6 +79,7 @@ describe("rates service", () => {
     await expect(getRates()).rejects.toThrow();
 
     fail = false;
+    tick(BACKOFF_MS);
     const first = await getRates();
     fail = true;
     tick(100);
@@ -106,10 +107,11 @@ describe("rates service", () => {
 
   it.each(invalidCases)("throws when ČNB returns %s and nothing is cached", async (_, invalid) => {
     let body = invalid;
-    const { getRates } = serviceReturning(() => body);
+    const { getRates, tick } = serviceReturning(() => body);
     await expect(getRates()).rejects.toThrow();
 
     body = CNB_TEXT;
+    tick(BACKOFF_MS);
     expect((await getRates()).rates[0]).toMatchObject({ code: "EUR", rate: 24.33 });
   });
 
@@ -130,8 +132,8 @@ describe("rates service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("shares one failing request between concurrent callers and retries on the next call", async () => {
-    const { getRates, fetchMock, state } = flakyService();
+  it("shares one failing request between concurrent callers and retries after the backoff", async () => {
+    const { getRates, fetchMock, state, tick } = flakyService();
     state.down = true;
 
     const results = await Promise.allSettled([getRates(), getRates(), getRates()]);
@@ -139,7 +141,49 @@ describe("rates service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     state.down = false;
+    tick(BACKOFF_MS);
     expect((await getRates()).rates[0]).toMatchObject({ code: "EUR" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks ČNB once per backoff while it is down and nothing is cached, then recovers", async () => {
+    const { getRates, fetchMock, tick, state } = flakyService();
+    state.down = true;
+
+    await expect(getRates()).rejects.toThrow("ECONNRESET");
+    for (let i = 0; i < 3; i++) await expect(getRates()).rejects.toThrow("ČNB rates are unavailable");
+    tick(BACKOFF_MS - 1);
+    await expect(getRates()).rejects.toThrow("ČNB rates are unavailable (ECONNRESET), not retrying yet");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    tick(1);
+    await expect(getRates()).rejects.toThrow("ECONNRESET");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    state.down = false;
+    await expect(getRates()).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    tick(BACKOFF_MS);
+    expect((await getRates()).rates[0]).toMatchObject({ code: "EUR", rate: 24.33 });
+    tick(TTL_MS - 1);
+    expect((await getRates()).rates[0]).toMatchObject({ code: "EUR", rate: 24.33 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails concurrent callers during a cold backoff without asking ČNB, then shares one retry", async () => {
+    const { getRates, fetchMock, tick, state } = flakyService();
+    state.down = true;
+    await expect(getRates()).rejects.toThrow();
+
+    const during = await Promise.allSettled([getRates(), getRates(), getRates()]);
+    expect(during.map((r) => r.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    state.down = false;
+    tick(BACKOFF_MS);
+    const [first, ...others] = await Promise.all([getRates(), getRates(), getRates()]);
+    expect(others).toEqual([first, first]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -209,5 +253,15 @@ describe("GET /api/rates", () => {
     const { getRates } = serviceReturning(() => body);
     const { app } = setup(getRates);
     expect((await app.request("/api/rates")).status).toBe(502);
+  });
+
+  it("answers 502 without asking ČNB again during the backoff of a cold outage", async () => {
+    const { getRates, fetchMock, state } = flakyService();
+    const { app } = setup(getRates);
+    state.down = true;
+
+    const status = async () => (await app.request("/api/rates")).status;
+    expect([await status(), await status(), await status()]).toEqual([502, 502, 502]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

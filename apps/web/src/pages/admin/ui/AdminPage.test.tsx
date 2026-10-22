@@ -1,5 +1,5 @@
 import { ADMIN_ORDERS_PAGE_SIZE } from "@fapi/shared";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAdminAuth } from "@/features/admin-auth";
@@ -94,5 +94,28 @@ describe("AdminPage", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Too many attempts, try again later"));
     expect(await showing(ADMIN_ORDERS_PAGE_SIZE)).toBeInTheDocument();
     expect(useAdminAuth.getState().authorization).toBe(AUTH);
+  });
+
+  it("offers Refresh once the list is too long to refresh by itself; it reloads only the newest page", async () => {
+    const { user, fetchMock, queryClient } = setup();
+    await showing(ADMIN_ORDERS_PAGE_SIZE);
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+
+    // As if Load more had been pressed 30 times (one order a page keeps the table small).
+    const pages = Array.from({ length: 31 }, (_, i) => ({ items: [order(`older-${i}`)], total: 100 }));
+    act(() => {
+      queryClient.setQueryData(ADMIN_ORDERS_KEY, { pages, pageParams: pages.map((_, i) => i) });
+    });
+    fetchMock.mockClear();
+
+    await user.click(await screen.findByRole("button", { name: "Refresh" }));
+
+    expect(await showing(ADMIN_ORDERS_PAGE_SIZE)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/admin/orders?limit=${ADMIN_ORDERS_PAGE_SIZE}&offset=0`,
+      expect.anything(),
+    );
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
   });
 });

@@ -13,6 +13,21 @@ export interface CartItem {
 /** A cart line as it was sent to the server. */
 export type OrderedLine = Pick<CartItem, "productId" | "quantity">;
 
+/** A line whose net unit price is no longer the one it was put in the cart with. */
+export interface PriceChange {
+  productId: number;
+  name: string;
+  oldPriceMinor: number;
+  newPriceMinor: number;
+}
+
+/** What a check against the catalogue changed in the cart, for the customer to see. */
+export interface CartChanges {
+  repriced: PriceChange[];
+  /** Lines taken out because their product no longer exists. */
+  removed: CartItem[];
+}
+
 interface CartState {
   items: CartItem[];
   /** True while a checkout request is in flight. Editing controls are disabled meanwhile. Not persisted. */
@@ -23,11 +38,18 @@ interface CartState {
   setSubmitting: (submitting: boolean) => void;
   /** Takes the submitted quantities out of the cart and keeps whatever else is in it. */
   removeOrdered: (ordered: OrderedLine[]) => void;
+  /**
+   * Takes over the current names and prices from `products`, the catalogue's answer for `checked`.
+   * A checked line without its product no longer exists and leaves the cart; lines added since the
+   * check started are kept as they are. Returns the price changes and removals, or undefined when
+   * there are none (a new name alone does not change what the customer pays).
+   */
+  syncProducts: (checked: readonly number[], products: readonly Product[]) => CartChanges | undefined;
 }
 
 export const useCartStore = create<CartState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       items: [],
       submitting: false,
       add: (product) =>
@@ -63,6 +85,36 @@ export const useCartStore = create<CartState>()(
             return left > 0 ? [{ ...item, quantity: left }] : [];
           }),
         })),
+      syncProducts: (checked, products) => {
+        const checkedIds = new Set(checked);
+        const current = new Map(products.map((p) => [p.id, p]));
+        const repriced: PriceChange[] = [];
+        const removed: CartItem[] = [];
+        const { items } = get();
+        const synced = items.flatMap((item) => {
+          if (!checkedIds.has(item.productId)) return [item];
+          const product = current.get(item.productId);
+          if (!product) {
+            removed.push(item);
+            return [];
+          }
+          if (product.priceMinor !== item.priceMinor) {
+            repriced.push({
+              productId: item.productId,
+              name: product.name,
+              oldPriceMinor: item.priceMinor,
+              newPriceMinor: product.priceMinor,
+            });
+          }
+          const same = product.name === item.name && product.priceMinor === item.priceMinor;
+          return [same ? item : { ...item, name: product.name, priceMinor: product.priceMinor }];
+        });
+        // Unchanged lines keep their identity, so a check that finds nothing leaves the cart alone.
+        if (synced.length !== items.length || synced.some((item, i) => item !== items[i])) {
+          set({ items: synced });
+        }
+        return repriced.length || removed.length ? { repriced, removed } : undefined;
+      },
     }),
     { name: "cart", partialize: ({ items }) => ({ items }) },
   ),

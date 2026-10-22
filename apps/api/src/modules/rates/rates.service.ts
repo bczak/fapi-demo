@@ -9,7 +9,7 @@ const REQUIRED_CODES = PAYMENT_CURRENCIES.filter((code) => code !== "CZK");
 interface Options {
   fetch?: typeof fetch;
   ttlMs?: number;
-  /** After a failed refresh, how long the cached rates are served before ČNB is asked again. */
+  /** After a failed refresh, how long ČNB is left alone (serving the cached rates, or failing without them). */
   backoffMs?: number;
   now?: () => number;
   warn?: (message: string) => void;
@@ -32,7 +32,8 @@ const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e)
 
 /**
  * Fetches ČNB daily rates, cached in memory; concurrent callers share one request.
- * If ČNB is unreachable or answers nonsense, the stale rates are served and ČNB is left alone for `backoffMs`.
+ * If ČNB is unreachable or answers nonsense, it is left alone for `backoffMs`: the stale rates are served
+ * meanwhile, or, with none cached yet, every call fails at once.
  */
 export function createRatesService({
   fetch: fetchFn = fetch,
@@ -42,17 +43,18 @@ export function createRatesService({
   warn = console.warn,
 }: Options = {}) {
   let cached: { data: CnbRates; fetchedAt: number } | undefined;
-  let retryAt = 0;
+  let failure: { error: unknown; retryAt: number } | undefined;
   let pending: Promise<CnbRates> | undefined;
 
   async function refresh(): Promise<CnbRates> {
     try {
       const data = await fetchRates(fetchFn);
       cached = { data, fetchedAt: now() };
+      failure = undefined;
       return data;
     } catch (e) {
+      failure = { error: e, retryAt: now() + backoffMs };
       if (!cached) throw e;
-      retryAt = now() + backoffMs;
       warn(`ČNB rates refresh failed (${errorMessage(e)}), serving rates from ${cached.data.date}`);
       return cached.data;
     }
@@ -60,7 +62,13 @@ export function createRatesService({
 
   return async function getRates(): Promise<CnbRates> {
     const t = now();
-    if (cached && (t - cached.fetchedAt < ttlMs || t < retryAt)) return cached.data;
+    if (cached && t - cached.fetchedAt < ttlMs) return cached.data;
+    if (failure && t < failure.retryAt) {
+      if (cached) return cached.data;
+      throw new Error(`ČNB rates are unavailable (${errorMessage(failure.error)}), not retrying yet`, {
+        cause: failure.error,
+      });
+    }
     pending ??= refresh().finally(() => {
       pending = undefined;
     });

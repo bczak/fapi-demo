@@ -18,7 +18,14 @@ export function formatRateDate(iso: string): string {
   return `${d}.${m}.${y}`;
 }
 
-/** Formats a major-unit amount in an arbitrary ISO currency. */
+const currencyFormat = (currency: string) => new Intl.NumberFormat("cs-CZ", { style: "currency", currency });
+
+/** Formats a major-unit amount in an arbitrary ISO currency, with `currencyDigits(currency)` decimals. */
 export function formatCurrency(amount: number, currency: string): string {
-  return new Intl.NumberFormat("cs-CZ", { style: "currency", currency }).format(amount);
+  return currencyFormat(currency).format(amount);
+}
+
+/** How many decimals a currency is written with: 2 for EUR, 3 for TND, 0 for JPY. */
+export function currencyDigits(currency: string): number {
+  return currencyFormat(currency).resolvedOptions().maximumFractionDigits ?? 2;
 }

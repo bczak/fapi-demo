@@ -18,15 +18,36 @@ export function calcTotals(
   return { subtotalMinor, vatMinor, totalMinor: subtotalMinor + vatMinor };
 }
 
-/** Converts CZK minor units into a foreign currency amount (major units, 2 decimals). */
-export function convertFromCzk(czkMinor: number, rate: Pick<CnbRate, "amount" | "rate">): number {
-  const foreign = (czkMinor / 100 / rate.rate) * rate.amount;
-  return Math.round(foreign * 100) / 100;
+/** A ČNB rate (at most 3 decimals) as a whole number of thousandths, e.g. 21.593 -> 21593n. */
+function rateInThousandths(rate: number): bigint {
+  const thousandths = Math.round(rate * 1000);
+  if (!Number.isSafeInteger(thousandths) || thousandths <= 0 || thousandths / 1000 !== rate) {
+    throw new RangeError(`Exchange rate ${rate} is not a positive number with at most 3 decimals`);
+  }
+  return BigInt(thousandths);
 }
 
-/** Same conversion, as a whole number of minor units (cents) of the foreign currency. */
-export function convertFromCzkMinor(czkMinor: number, rate: Pick<CnbRate, "amount" | "rate">): number {
-  return Math.round(convertFromCzk(czkMinor, rate) * 100);
+/**
+ * Converts CZK minor units into whole minor units of a foreign currency written with `digits` decimals
+ * (cents by default). Exact integer maths, rounded once, half up.
+ */
+export function convertFromCzkMinor(
+  czkMinor: number,
+  rate: Pick<CnbRate, "amount" | "rate">,
+  digits = 2,
+): number {
+  if (!Number.isSafeInteger(czkMinor) || czkMinor < 0) {
+    throw new RangeError(`CZK amount ${czkMinor} is not a whole, non-negative number of haléře`);
+  }
+  // czkMinor / 100 CZK ÷ (thousandths / 1000 CZK per `amount` units) × 10^digits
+  const numerator = BigInt(czkMinor) * BigInt(rate.amount) * 10n ** BigInt(digits + 1);
+  const denominator = rateInThousandths(rate.rate);
+  return Number((2n * numerator + denominator) / (2n * denominator));
+}
+
+/** Same conversion in major units, e.g. 40.25 (EUR), or 13.333 with 3 `digits` (TND). */
+export function convertFromCzk(czkMinor: number, rate: Pick<CnbRate, "amount" | "rate">, digits = 2): number {
+  return convertFromCzkMinor(czkMinor, rate, digits) / 10 ** digits;
 }
 
 /**
@@ -46,6 +67,7 @@ export function quotePayment(
     currency,
     rate: rate.rate / rate.amount,
     rateDate: rates.date,
-    totalMinor: convertFromCzkMinor(czkTotalMinor, rate),
+    // EUR and USD both have cents.
+    totalMinor: convertFromCzkMinor(czkTotalMinor, rate, 2),
   };
 }

@@ -1,4 +1,4 @@
-import { type CreateOrderInput, createOrderSchema } from "@fapi/shared";
+import { type CreateOrderInput, createOrderSchema, type Product } from "@fapi/shared";
 import { type Mock, vi } from "vitest";
 
 export type Handler = (url: URL, init: RequestInit) => Response | Promise<Response>;
@@ -15,6 +15,33 @@ export function stubFetch(routes: Record<string, Handler>) {
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
+
+/**
+ * GET /api/products as the API answers it: all of `products` as one page, or with `?ids=` the ones
+ * asked for, in id order. The array is read at every request, so a test can change the catalogue.
+ */
+export const catalogue =
+  (products: Product[]): Handler =>
+  (url) => {
+    const ids = url.searchParams.get("ids")?.split(",").map(Number);
+    const items = ids ? products.filter((p) => ids.includes(p.id)).sort((a, b) => a.id - b.id) : products;
+    return Response.json({ items, total: products.length });
+  };
+
+/** GET /api/products whose first answer is `first`, settled by the test; the later ones come from `shelf`. */
+export function firstAnswerFrom(first: Promise<Response>, shelf: Product[]): Handler {
+  let requests = 0;
+  return (url, init) => {
+    requests += 1;
+    return requests === 1 ? first : catalogue(shelf)(url, init);
+  };
+}
+
+/** The `?ids=` of the product look-ups made so far, in order. */
+export const checkedIds = (fetchMock: Mock<typeof fetch>) =>
+  fetchMock.mock.calls
+    .map(([input]) => new URL(String(input), "http://localhost").searchParams.get("ids"))
+    .filter((ids) => ids !== null);
 
 /** A request the server never answers: like a real fetch, it only fails once its signal aborts. */
 export const hang: Handler = (_url, { signal }) =>

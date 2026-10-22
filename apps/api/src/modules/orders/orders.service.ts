@@ -39,6 +39,16 @@ export class IdempotencyConflictError extends Error {
   }
 }
 
+/** The order would cost another total than the one the customer confirmed: a price changed in between. */
+export class PriceChangedError extends Error {
+  constructor(
+    public expectedTotalMinor: number,
+    public totalMinor: number,
+  ) {
+    super("Prices have changed since you confirmed the order. Check the new total and pay again.");
+  }
+}
+
 export interface CreateOrderResult {
   order: Order;
   /** False when the idempotency key was already used and the existing order is returned. */
@@ -48,8 +58,10 @@ export interface CreateOrderResult {
 /**
  * Prices are always taken from the DB, never from the client, and so is the exchange rate:
  * `rates` are the live ČNB rates (only needed when paying in a currency other than CZK).
- * Repeating an idempotency key with the same request returns the order it created the first time;
- * with a different request it throws IdempotencyConflictError.
+ * The client's `expectedTotalMinor` is only compared: at another total nothing is saved and it
+ * throws PriceChangedError.
+ * Repeating an idempotency key with the same request returns the order it created the first time
+ * (whatever total it expects now); with a different request it throws IdempotencyConflictError.
  */
 export function createOrder(db: Db, input: CreateOrderInput, rates?: CnbRates): CreateOrderResult {
   const existing = findOrderByKey(db, input);
@@ -72,6 +84,10 @@ export function createOrder(db: Db, input: CreateOrderInput, rates?: CnbRates): 
     return quantity ? [{ productId: p.id, productName: p.name, unitPriceMinor: p.priceMinor, quantity }] : [];
   });
   const totals = calcTotals(lines);
+  const { expectedTotalMinor } = input;
+  if (expectedTotalMinor !== undefined && expectedTotalMinor !== totals.totalMinor) {
+    throw new PriceChangedError(expectedTotalMinor, totals.totalMinor);
+  }
   const payment = quotePayment(totals.totalMinor, input.currency, rates);
   if (!payment) throw new UnsupportedCurrencyError(input.currency);
   const id = randomUUID();
@@ -119,7 +135,8 @@ function mergeLines(items: CreateOrderInput["items"]): Map<number, number> {
 
 /**
  * SHA-256 of what the request asks for: the customer as validated, the currency and the merged
- * lines sorted by product. Reordered or split lines are the same request.
+ * lines sorted by product. Reordered or split lines are the same request. So is one expecting another
+ * total: a retry after a price change must get the order its key placed, not a conflict and a second order.
  */
 function requestHash({ customer, currency, items }: CreateOrderInput): string {
   // Field by field for a fixed order; a new Customer field won't compile until it is added here.

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { CnbRates } from "@fapi/shared";
+import { type CnbRates, calcTotals } from "@fapi/shared";
 import { createApp } from "./app";
 import { createDb } from "./db/client";
+import { products } from "./db/schema";
 import { seedProducts } from "./db/seed";
 
 export const SAMPLE_RATES: CnbRates = {
@@ -39,13 +40,39 @@ export const postJson = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-/** A valid POST /api/orders body for one piece of product 1; every call gets a fresh idempotency key. */
-export const orderBody = (overrides: object = {}) => ({
-  customer: validCustomer,
-  items: [{ productId: 1, quantity: 1 }],
-  idempotencyKey: randomUUID(),
-  ...overrides,
-});
+/** Net unit prices of the seeded catalogue, as `setup` stocks it. */
+const seededPrices = (() => {
+  const db = createDb(":memory:");
+  seedProducts(db);
+  const prices = new Map(
+    db
+      .select()
+      .from(products)
+      .all()
+      .map((p) => [p.id, p.priceMinor]),
+  );
+  db.$client.close();
+  return prices;
+})();
+
+/** The total incl. VAT of `items` at the seeded prices: what the checkout shows the customer. */
+export const seededTotalOf = (items: readonly { productId: number; quantity: number }[]) =>
+  calcTotals(items.map((i) => ({ unitPriceMinor: seededPrices.get(i.productId) ?? 0, quantity: i.quantity })))
+    .totalMinor;
+
+/**
+ * A valid POST /api/orders body, for one piece of product 1 unless `overrides` say otherwise. Every call
+ * gets a fresh idempotency key, and the total of its items is the one confirmed, as the web app sends it.
+ */
+export const orderBody = (overrides: object = {}) => {
+  const body = {
+    customer: validCustomer,
+    items: [{ productId: 1, quantity: 1 }],
+    idempotencyKey: randomUUID(),
+    ...overrides,
+  };
+  return { expectedTotalMinor: seededTotalOf(body.items), ...body };
+};
 
 export const getAdminOrders = (app: ReturnType<typeof setup>["app"], query = "") =>
   app.request(`/api/admin/orders${query}`, { headers: { Authorization: basic(ADMIN.user, ADMIN.password) } });

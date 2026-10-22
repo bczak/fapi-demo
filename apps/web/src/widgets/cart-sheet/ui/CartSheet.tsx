@@ -1,9 +1,9 @@
-import { type Customer, formatCzk } from "@fapi/shared";
+import { type Customer, formatCzk, type PaymentCurrency } from "@fapi/shared";
 import { ShoppingCart } from "lucide-react";
 import { useState } from "react";
-import { CartTotals, useCartCount, useCartStore } from "@/entities/cart";
+import { type CartChanges, CartTotals, mergeCartChanges, useCartCount, useCartStore } from "@/entities/cart";
 import { CartQuantity } from "@/features/cart-quantity";
-import { PaymentStep, ShippingForm } from "@/features/place-order";
+import { PaymentStep, pendingSnapshot, refreshCart, ShippingForm } from "@/features/place-order";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import {
@@ -14,6 +14,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/shared/ui/sheet";
+import { CartChangesNotice } from "./CartChangesNotice";
 import { type CheckoutStep, CheckoutSteps } from "./CheckoutSteps";
 
 const HEADINGS: Record<CheckoutStep, { title: string; description: string }> = {
@@ -25,24 +26,49 @@ const HEADINGS: Record<CheckoutStep, { title: string; description: string }> = {
 /**
  * Cart icon with item count. Opens a side sheet (full screen on phones) with a 3-step checkout:
  * review the items, enter shipping details, choose the payment currency.
+ * The checkout so far (customer, currency) lives here, above the steps, so moving between them keeps it.
  */
 export function CartSheet() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<CheckoutStep>("review");
   const [customer, setCustomer] = useState<Customer>();
+  const [currency, setCurrency] = useState<PaymentCurrency>("CZK");
+  const [changes, setChanges] = useState<CartChanges>();
   const count = useCartCount();
   const items = useCartStore((s) => s.items);
 
   const heading = HEADINGS[step];
 
+  function changeOpen(next: boolean) {
+    setOpen(next);
+    if (!next) return;
+    // After a reload: the order sent without an answer fills in the checkout again, so paying
+    // repeats the same request (and its key) instead of placing a second order.
+    const pending = pendingSnapshot();
+    if (!customer && pending) {
+      setCustomer(pending.customer);
+      setCurrency(pending.currency);
+    }
+    // Prices may have changed since the products were added. Pay checks again, so a failure here can wait.
+    if (!useCartStore.getState().submitting) void refreshCart().then(showChanges, () => {});
+  }
+
+  // The notice stays until the customer pays (confirming it) or the order is placed: a check that finds
+  // nothing new must not hide a change they have not confirmed yet.
+  function showChanges(found: CartChanges | undefined) {
+    if (found) setChanges((shown) => mergeCartChanges(shown, found));
+  }
+
   function finish() {
     setOpen(false);
     setStep("review");
     setCustomer(undefined);
+    setCurrency("CZK");
+    setChanges(undefined);
   }
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
+    <Sheet open={open} onOpenChange={changeOpen}>
       <SheetTrigger asChild>
         <Button variant="outline" size="icon" className="relative" aria-label={`Open cart, ${count} items`}>
           <ShoppingCart />
@@ -61,6 +87,8 @@ export function CartSheet() {
           <SheetTitle>{heading.title}</SheetTitle>
           <SheetDescription>{heading.description}</SheetDescription>
         </SheetHeader>
+
+        {changes && <CartChangesNotice changes={changes} />}
 
         {items.length === 0 ? (
           <p className="text-muted-foreground py-8 text-center">Your cart is empty.</p>
@@ -105,7 +133,14 @@ export function CartSheet() {
             )}
 
             {step === "payment" && customer && (
-              <PaymentStep customer={customer} onBack={() => setStep("shipping")} onPlaced={finish} />
+              <PaymentStep
+                customer={customer}
+                currency={currency}
+                onCurrencyChange={setCurrency}
+                onCartChange={setChanges}
+                onBack={() => setStep("shipping")}
+                onPlaced={finish}
+              />
             )}
           </div>
         )}

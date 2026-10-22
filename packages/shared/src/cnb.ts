@@ -1,8 +1,10 @@
 import type { CnbRate, CnbRates } from "./types";
 
 const DATE_RE = /^(\d{2})\.(\d{2})\.(\d{4})(?:\s|$)/;
+const COLUMNS = "země|měna|množství|kód|kurz";
 const AMOUNT_RE = /^\d+$/;
-const RATE_RE = /^\d+(?:,\d+)?$/;
+// ČNB publishes 3 decimals; the FX maths relies on there being no more.
+const RATE_RE = /^\d+(?:,\d{1,3})?$/;
 const CODE_RE = /^[A-Z]{3}$/;
 
 function invalid(detail: string): Error {
@@ -53,12 +55,13 @@ function parseRow(row: string): CnbRate {
  *   země|měna|množství|kód|kurz
  *   Austrálie|dolar|1|AUD|15,191
  *
- * Strict: any malformed row, duplicate code or empty list throws, so a bad
+ * Strict: an unexpected column header, any malformed row, duplicate code or empty list throws, so a bad
  * response can never replace good data.
  */
 export function parseCnbRates(text: string): CnbRates {
-  const [head, , ...rows] = text.trim().split(/\r?\n/);
+  const [head, columns, ...rows] = text.trim().split(/\r?\n/);
   const date = parseDate(head);
+  if (columns !== COLUMNS) throw invalid(`unexpected column header "${columns ?? ""}"`);
   const rates = rows.map(parseRow);
 
   if (rates.length === 0) throw invalid("no rates");

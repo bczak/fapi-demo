@@ -70,7 +70,7 @@ Without Docker: install [Bun](https://bun.sh) 1.4+ and Node 22, then `bun instal
 - The shop is a product grid (3 columns on desktop, 2 on tablets, 1 on phones) with 50 products, 12 at a time and a **Load more** button. Prices come from the API.
 - **Add to cart** turns into a quantity stepper (`− 2 +`, with a red remove button). `−` at 1 removes the item.
 - The cart icon in the header shows the item count and opens a side **sheet** (full screen on phones) with a 3-step checkout: **Review** (items, quantities, net price, VAT, total, recalculated on every change), **Shipping** (customer details) and **Payment** (currency).
-- The cart is kept in `localStorage` (zustand), so a refresh does not lose it.
+- The cart is kept in `localStorage` (zustand), so a refresh does not lose it. Its prices are checked against the API when the cart opens and again right before paying; if a price changed or a product is gone, nothing is sent and the cart shows what changed until the customer confirms the new total.
 - The order is created by the **API**, never by the browser, and the server ignores any price sent by the client: it reads prices from the database and stores a snapshot of each line.
 
 Code: `apps/web/src/widgets/cart-sheet`, `features/place-order`, `features/cart-quantity`, `entities/cart`, `apps/api/src/modules/orders`.
@@ -95,7 +95,7 @@ Code: `apps/web/src/pages/thank-you`, `widgets/order-recap`, `entities/order/ui/
 - `apps/api/src/modules/products`, `rates`, `admin`: pagination, ČNB failures (502, stale cache), Basic auth.
 - `packages/shared`: VAT and FX maths, the ČNB parser, the zod schemas.
 - `apps/api/src/db/migrations.test.ts`: upgrading a database that already holds orders through every migration.
-- `apps/web` (Vitest + jsdom + Testing Library): the whole checkout from the product grid through the sheet, retries reusing the idempotency key, the cart locked while an order is placed, request timeouts, admin login with non-ASCII credentials, pagination, signing out.
+- `apps/web` (Vitest + jsdom + Testing Library): the whole checkout from the product grid through the sheet, retries reusing the idempotency key (also after Back/forward and a reload), the cart locked while an order is placed, price changes found before paying, request timeouts, the currency converter, admin login with non-ASCII credentials, pagination and its refresh budget, signing out.
 
 The same checks run on every push in GitHub Actions (see below).
 </details>
@@ -133,13 +133,15 @@ The same checks run on every push in GitHub Actions (see below).
 - VAT is 21 % of the **net** price: `vat = round(subtotal × 21 / 100)`, `total = subtotal + vat`.
 - All money is stored and calculated as **integer minor units** (haléře), never floats. Field names end in `Minor`.
 - One function (`calcTotals` in `packages/shared/src/pricing.ts`) is used by the cart screen and by the server, which stores net, VAT and total with the order. Unit tests cover rounding.
+- Currency conversion is exact integer arithmetic too (the ČNB rate as a whole number of thousandths) and rounds once, half up, to the currency's smallest unit: cents for EUR/USD payments, and each currency's own decimals in the thank-you converter (3 for TND, 0 for JPY).
 </details>
 
 <details>
 <summary><b>8. ČNB integration</b>: live exchange rates, used at checkout and on the thank-you page</summary>
 
 ![Payment step](docs/screenshots/checkout-payment.png)
-- The API reads ČNB's public daily file (`denni_kurz.txt`), parses it strictly (`packages/shared/src/cnb.ts`) and caches it for an hour. A response is only accepted if it is complete and valid (real date, 3-letter codes, finite positive numbers, EUR and USD present). If ČNB is unreachable or sends bad data, the last good rates are served (with a one-minute backoff, and concurrent refreshes share one request); if there are none, `/api/rates` answers `502` and the UI says so, while CZK still works.
+- The API reads ČNB's public daily file (`denni_kurz.txt`), parses it strictly (`packages/shared/src/cnb.ts`) and caches it for an hour. A response is only accepted if it is well-formed: a real date on the first line, exactly the column header `země|měna|množství|kód|kurz`, every row with 5 fields, a 3-letter code, a positive whole amount and a positive rate with at most 3 decimals, no duplicate codes, and EUR and USD present (other currencies may come and go, as ČNB adds and drops them).
+- If ČNB is unreachable or sends bad data, it is left alone for a minute: the last good rates are served meanwhile, or, if there are none yet, `/api/rates` answers `502` straight away without asking ČNB again (the UI says so, while CZK still works). Concurrent refreshes share one request.
 - **Payment step:** the customer picks **CZK, EUR or USD**. The screen shows the total in each currency using the live rate (`quotePayment`, shared code).
 - When the order is placed, the **server** looks up the rate itself and calculates the amount; it stores the currency, the exchange rate, the rate's date and the amount with the order. Nothing the browser sends about money is trusted.
 - The thank-you page and the admin show exactly what was stored.
@@ -154,6 +156,7 @@ The same checks run on every push in GitHub Actions (see below).
 - `GET /api/admin/orders` is protected with HTTP Basic auth (`admin` / `password` by default, set `ADMIN_USER` / `ADMIN_PASSWORD`). Credentials are compared in constant time.
 - The server sends no `WWW-Authenticate` header, so the browser does not pop up its native dialog; the SPA has its own login form.
 - The table lists date, customer, items, total and what was paid (currency and amount), 20 orders at a time with **Load more**. **View** opens a sheet with the same details the customer sees: customer, lines, VAT and the payment with its stored rate.
+- The list refreshes itself every 30 s, less often as more pages are loaded, so it always stays well inside the API's admin rate limit; beyond 30 pages it stops and offers a **Refresh** button instead.
 </details>
 
 ## More than the assignment
@@ -168,15 +171,16 @@ The same checks run on every push in GitHub Actions (see below).
 - **Loading states** (skeleton cards, spinners) and server-side pagination of products.
 - **REST API** for products, prices, orders and rates:
 
-| Method | Path                         |                                    |
-| ------ | ---------------------------- | ---------------------------------- |
-| `GET`  | `/api/products?limit&offset` | page of products with prices       |
-| `GET`  | `/api/products/:id`          | one product                        |
-| `POST` | `/api/orders`                | create an order (server prices it) |
-| `GET`  | `/api/orders/:id`            | one order (unguessable UUID)       |
-| `GET`  | `/api/rates`                 | current ČNB rates                  |
-| `GET`  | `/api/admin/orders`          | orders for the admin (Basic auth)  |
-| `GET`  | `/api/health`                | health check                       |
+| Method | Path                         |                                                            |
+| ------ | ---------------------------- | ---------------------------------------------------------- |
+| `GET`  | `/api/products?limit&offset` | page of products with prices                               |
+| `GET`  | `/api/products?ids=1,2,3`    | current data of up to 50 products (the cart's price check) |
+| `GET`  | `/api/products/:id`          | one product                                                |
+| `POST` | `/api/orders`                | create an order (server prices it)                         |
+| `GET`  | `/api/orders/:id`            | one order (unguessable UUID)                               |
+| `GET`  | `/api/rates`                 | current ČNB rates                                          |
+| `GET`  | `/api/admin/orders`          | orders for the admin (Basic auth)                          |
+| `GET`  | `/api/health`                | health check                                               |
 
 ## Production
 
@@ -192,13 +196,14 @@ On Railway: one service from this repo, a volume mounted at `/data`, and `TRUST_
 ## Security notes
 
 - **Money is server-authoritative.** Prices, VAT, the exchange rate and the amount to pay are computed on the server; nothing the browser sends about money is trusted.
-- **Orders are idempotent.** Each checkout attempt carries a random v4 UUID that is unique in the database, and the browser keeps it (in `sessionStorage`) until the order succeeds, so a retry after a lost response or a reload returns the order that was already created instead of a second one. The key is bound to a hash of the request: reusing it for a different order answers `409` with no order data, so a key can never be used to read someone else's order.
+- **The customer pays what they saw.** The checkout sends the total it showed (`expectedTotalMinor`); if a price changed in the meantime the server answers `409` with `code: "price_changed"` and saves nothing, and the cart shows the new prices for the customer to confirm.
+- **Orders are idempotent.** Each checkout attempt carries a random v4 UUID that is unique in the database. The browser keeps it, with the order it belongs to (shipping details and currency), in `sessionStorage` until the order succeeds, so a retry after a lost response, after going Back and forth, or after a reload sends the same request and gets the order that was already created instead of a second one. The key is bound to a hash of the request: reusing it for a different order answers `409` with no order data, so a key can never be used to read someone else's order.
 - **Limits.** At most 99 pieces of one product per order (counted after merging duplicate lines), 32 KB request bodies, order submissions and admin requests are rate limited per client (IPv6 clients per /64), and repeated failed admin logins are locked out for a minute (`429` with `Retry-After`). The limiter is in memory with bounded, constant-time eviction.
 - **Errors.** Malformed requests get `4xx` JSON, never a `500`; unexpected errors are logged and answered with a generic message.
 - **Admin auth** is HTTP Basic over HTTPS (Railway terminates TLS; never use it over plain HTTP on an untrusted network). Credentials are UTF-8, compared in constant time, and never logged. The browser keeps the header in `sessionStorage` only for the tab's lifetime; a production system should use an `HttpOnly` session cookie instead.
 - **Order links** (`/thank-you/<uuid>`) are unguessable but show the customer's details to anyone who has the link; responses are `Cache-Control: no-store`. Use fake data in the demo.
 - **Injection.** All queries are parameterised (Drizzle) and React escapes every customer-supplied string.
-- **ČNB data is validated** (dates, codes, finite positive numbers, complete lists) before it replaces the cached rates.
+- **ČNB data is validated** (date, the exact column header, 3-letter codes, positive amounts and rates with at most 3 decimals, no duplicate codes, EUR and USD present) before it replaces the cached rates.
 - **The browser validates the API too.** Every response is parsed with the shared zod schemas, so unexpected data becomes a readable error instead of a broken page, and every request has a 15 s timeout.
 
 ## Quality

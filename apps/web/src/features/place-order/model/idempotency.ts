@@ -1,17 +1,19 @@
-import { type CreateOrderInput, createOrderSchema } from "@fapi/shared";
+import { createOrderSchema, type OrderSnapshot, orderSnapshotSchema } from "@fapi/shared";
 import { z } from "zod";
 
-/** What the customer confirms on the payment step. The same snapshot is the same order. */
-export type OrderSnapshot = Omit<CreateOrderInput, "idempotencyKey">;
-
-const attemptSchema = z.object({ fingerprint: z.string(), key: createOrderSchema.shape.idempotencyKey });
+// The key and the order it was sent with: after a reload the snapshot fills in the checkout again,
+// so the retry repeats the same request.
+const attemptSchema = z.object({
+  key: createOrderSchema.shape.idempotencyKey,
+  snapshot: orderSnapshotSchema,
+});
 type Attempt = z.infer<typeof attemptSchema>;
 
 /** Where the open attempt is kept, so a reload after a lost response retries with the same key. */
 export const ATTEMPT_STORAGE_KEY = "checkout-attempt";
 
 // In memory for the remounts (the cart sheet closed and reopened while a request is in flight) and
-// mirrored to sessionStorage for reloads. The fingerprint holds the shipping details, so it stays
+// mirrored to sessionStorage for reloads. The snapshot holds the shipping details, so it stays
 // in this tab only and goes once the order is placed.
 let attempt = restoreAttempt();
 
@@ -34,7 +36,12 @@ function saveAttempt(next: Attempt | undefined) {
   }
 }
 
-/** Same customer, currency and items give the same string, whatever the order of fields and lines. */
+/**
+ * Same customer, currency and items give the same string, whatever the order of fields and lines.
+ * The expected total is left out, as the server leaves it out of its request hash: if a price changes
+ * after a request whose answer was lost, the retry at the new total must get the order that request
+ * may have placed, not a new key and a second order.
+ */
 export function fingerprintOf({ customer, currency, items }: OrderSnapshot) {
   const lines = items
     .map(({ productId, quantity }): [number, number] => [productId, quantity])
@@ -52,13 +59,31 @@ export function randomUuid() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
-/** One key per checkout attempt: a retry of the same snapshot reuses it, any other snapshot gets a new one. */
+/**
+ * One key per checkout attempt: a retry of the same snapshot reuses it, any other snapshot gets a new one.
+ * The snapshot must be read with orderSnapshotSchema first, as the server reads it.
+ */
 export function idempotencyKeyFor(snapshot: OrderSnapshot) {
-  const fingerprint = fingerprintOf(snapshot);
-  if (attempt?.fingerprint === fingerprint) return attempt.key;
-  const next = { fingerprint, key: randomUuid() };
+  if (attempt && fingerprintOf(attempt.snapshot) === fingerprintOf(snapshot)) return attempt.key;
+  const next = { key: randomUuid(), snapshot };
   saveAttempt(next);
   return next.key;
+}
+
+/** The order of the open attempt: sent, but not known to be placed. */
+export function pendingSnapshot(): OrderSnapshot | undefined {
+  return attempt?.snapshot;
+}
+
+/**
+ * Whether sending `snapshot` repeats the open attempt, with its key: the server then answers with the
+ * order that attempt placed, if it got through, without needing a quote.
+ */
+export function repeatsAttempt(snapshot: OrderSnapshot) {
+  const request = orderSnapshotSchema.safeParse(snapshot);
+  return Boolean(
+    attempt && request.success && fingerprintOf(request.data) === fingerprintOf(attempt.snapshot),
+  );
 }
 
 /** The attempt is over (the order was placed, or the server refused its key): the next one gets a fresh key. */

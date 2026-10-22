@@ -81,6 +81,16 @@ describe("response schemas accept what the API sends", () => {
     };
     expect(apiErrorSchema.parse(invalid)).toEqual(invalid);
   });
+
+  it("error bodies with the code that tells the two 409s of an order apart", () => {
+    for (const code of ["price_changed", "idempotency_conflict"]) {
+      expect(apiErrorSchema.parse({ message: "Conflict", code })).toEqual({ message: "Conflict", code });
+    }
+  });
+
+  it("an error body with a code from a newer API, keeping its message", () => {
+    expect(apiErrorSchema.parse({ message: "Sold out", code: "sold_out" })).toEqual({ message: "Sold out" });
+  });
 });
 
 describe("response schemas reject malformed answers", () => {

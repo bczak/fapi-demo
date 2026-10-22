@@ -94,8 +94,15 @@ export const apiIssueSchema = z.object({
   message: z.string(),
 });
 
+/** Why POST /orders answered 409: the key belongs to another order, or the total is not the confirmed one. */
+export const API_ERROR_CODES = ["idempotency_conflict", "price_changed"] as const;
+export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
+
 /** Body of every error answer; `issues` come with a rejected request body (422). */
 export const apiErrorSchema = z.object({
   message: z.string(),
+  // For answers the client tells apart by more than the status. A code it does not know yet is
+  // dropped, not taken for a malformed body, so the message still reaches the customer.
+  code: z.enum(API_ERROR_CODES).optional().catch(undefined),
   issues: z.array(apiIssueSchema).optional(),
 });

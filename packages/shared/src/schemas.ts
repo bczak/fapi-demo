@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const MAX_QUANTITY = 99;
+/** Lines in one order, and so products a cart can check in one request. */
+export const MAX_ORDER_LINES = 50;
 export const PRODUCTS_PAGE_SIZE = 12;
 export const ADMIN_ORDERS_PAGE_SIZE = 20;
 
@@ -13,9 +15,22 @@ export const adminOrdersQuerySchema = z.object({
 export const PAYMENT_CURRENCIES = ["CZK", "EUR", "USD"] as const;
 export type PaymentCurrency = (typeof PAYMENT_CURRENCIES)[number];
 
+/** "3,1,2" -> [3, 1, 2]: the products in a cart, to look up their current names and prices. */
+const productIdsSchema = z
+  .string()
+  .regex(/^\d+(,\d+)*$/, "Expected comma-separated product ids")
+  .transform((ids) => ids.split(",").map(Number))
+  .pipe(
+    z
+      .array(z.number().int().positive())
+      .max(MAX_ORDER_LINES, `At most ${MAX_ORDER_LINES} product ids at a time`),
+  );
+
 export const productsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(PRODUCTS_PAGE_SIZE),
   offset: z.coerce.number().int().min(0).default(0),
+  /** These products instead of a page; limit and offset do not apply. */
+  ids: productIdsSchema.optional(),
 });
 
 const MAX_PHONE_LENGTH = 20;
@@ -45,12 +60,27 @@ export const orderItemInputSchema = z.object({
   quantity: z.number().int().min(1).max(MAX_QUANTITY),
 });
 
-export const createOrderSchema = z
-  .object({
-    customer: customerSchema,
-    items: z.array(orderItemInputSchema).min(1, "Cart is empty").max(50),
-    // Only the choice is sent; the server looks up the live ČNB rate and computes the amount itself.
-    currency: z.enum(PAYMENT_CURRENCIES).default("CZK"),
+/**
+ * An order as the customer confirms it, before it gets its idempotency key. The browser reads it
+ * with this schema too (trimmed), so it sends and fingerprints what the server reads and hashes.
+ */
+export const orderSnapshotSchema = z.object({
+  customer: customerSchema,
+  items: z.array(orderItemInputSchema).min(1, "Cart is empty").max(MAX_ORDER_LINES),
+  // Only the choice is sent; the server looks up the live ČNB rate and computes the amount itself.
+  currency: z.enum(PAYMENT_CURRENCIES).default("CZK"),
+  /**
+   * The CZK total incl. VAT the customer confirmed. The server places no order at another total (409,
+   * code "price_changed"), so a price changed after the cart check is never charged unseen. The web app
+   * always sends it; it is optional so a page loaded before the check existed can still order, unchecked.
+   * It identifies no order: a retry after a price change keeps its idempotency key and gets the order
+   * the first request may have placed.
+   */
+  expectedTotalMinor: z.number().int().nonnegative().optional(),
+});
+
+export const createOrderSchema = orderSnapshotSchema
+  .extend({
     // One key per checkout attempt. Retrying with the same key must return the existing order, not a new one.
     // Random v4 only (no nil UUID that every client could share), lower-cased so case can't make a new key.
     idempotencyKey: z.uuidv4().toLowerCase(),
@@ -74,4 +104,5 @@ export const createOrderSchema = z
 
 export type Customer = z.infer<typeof customerSchema>;
 export type OrderItemInput = z.infer<typeof orderItemInputSchema>;
+export type OrderSnapshot = z.infer<typeof orderSnapshotSchema>;
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;

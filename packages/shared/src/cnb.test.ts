@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseCnbRates } from "./cnb";
 
-const HEADER = "21.10.2026 #203\nzemě|měna|množství|kód|kurz";
+const COLUMNS = "země|měna|množství|kód|kurz";
+const HEADER = `21.10.2026 #203\n${COLUMNS}`;
 const SAMPLE = `${HEADER}
 Austrálie|dolar|1|AUD|15,191
 Maďarsko|forint|100|HUF|6,201
@@ -32,7 +33,22 @@ describe("parseCnbRates", () => {
 
   it("throws on malformed input", () => {
     expect(() => parseCnbRates("garbage")).toThrow();
-    expect(() => parseCnbRates("21.10.2026 #1\nheader\nfoo|bar")).toThrow();
+    expect(() => parseCnbRates(withRows("foo|bar"))).toThrow();
+  });
+
+  it.each([
+    ["a missing column header", "21.10.2026 #203\nEMU|euro|1|EUR|24,330"],
+    ["another column header", "21.10.2026 #203\nheader\nEMU|euro|1|EUR|24,330"],
+    ["reordered columns", "21.10.2026 #203\nzemě|měna|kód|množství|kurz\nEMU|euro|EUR|1|24,330"],
+    ["an extra column", `21.10.2026 #203\n${COLUMNS}|poznámka\nEMU|euro|1|EUR|24,330`],
+    ["an English column header", "21.10.2026 #203\nCountry|Currency|Amount|Code|Rate\nEMU|euro|1|EUR|24,330"],
+    [
+      "a column header without diacritics",
+      "21.10.2026 #203\nzeme|mena|mnozstvi|kod|kurz\nEMU|euro|1|EUR|24,330",
+    ],
+    ["a padded column header", `21.10.2026 #203\n${COLUMNS} \nEMU|euro|1|EUR|24,330`],
+  ])("rejects a file with %s", (_, text) => {
+    expect(() => parseCnbRates(text)).toThrow(/column header/);
   });
 
   it("rejects a header without any currency rows", () => {
@@ -48,11 +64,11 @@ describe("parseCnbRates", () => {
     ["29.02.2025 #1", "a leap day in a non-leap year"],
     ["2026-10-21 #1", "a non-ČNB date format"],
   ])("rejects an invalid header date %s (%s)", (head) => {
-    expect(() => parseCnbRates(`${head}\nheader\nEMU|euro|1|EUR|24,330`)).toThrow();
+    expect(() => parseCnbRates(`${head}\n${COLUMNS}\nEMU|euro|1|EUR|24,330`)).toThrow(/date/);
   });
 
   it("accepts a leap day in a leap year", () => {
-    expect(parseCnbRates("29.02.2028 #1\nheader\nEMU|euro|1|EUR|24,330").date).toBe("2028-02-29");
+    expect(parseCnbRates(`29.02.2028 #1\n${COLUMNS}\nEMU|euro|1|EUR|24,330`).date).toBe("2028-02-29");
   });
 
   it.each([
@@ -70,8 +86,16 @@ describe("parseCnbRates", () => {
     ["a negative value", "EMU|euro|1|EUR|-24,33"],
     ["a zero value", "EMU|euro|1|EUR|0,000"],
     ["an empty value", "EMU|euro|1|EUR|"],
+    ["more than 3 decimals", "EMU|euro|1|EUR|24,3301"],
   ])("rejects a rate with %s", (_, row) => {
     expect(() => parseCnbRates(withRows(row))).toThrow();
+  });
+
+  it("accepts rates with up to 3 decimals", () => {
+    const parsed = parseCnbRates(
+      withRows("EMU|euro|1|EUR|24,3", "USA|dolar|1|USD|21,59", "Japonsko|jen|100|JPY|15,123"),
+    );
+    expect(parsed.rates.map((rate) => rate.rate)).toEqual([24.3, 21.59, 15.123]);
   });
 
   it.each([

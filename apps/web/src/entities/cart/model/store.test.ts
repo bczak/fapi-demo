@@ -1,4 +1,4 @@
-import { MAX_QUANTITY } from "@fapi/shared";
+import { MAX_QUANTITY, type Product } from "@fapi/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { cartLines, cartWith } from "@/test/cart";
 import { product } from "@/test/fixtures";
@@ -85,6 +85,54 @@ describe("cart store: removeOrdered", () => {
     cartWith([2, 4]);
     useCartStore.getState().removeOrdered([{ productId: 1, quantity: 1 }]);
     expect(cartLines()).toEqual([[2, 4]]);
+  });
+});
+
+describe("cart store: syncProducts", () => {
+  const priced = (id: number, priceMinor: number) => ({ ...product(id), priceMinor });
+  const sync = (checked: number[], products: Product[]) =>
+    useCartStore.getState().syncProducts(checked, products);
+
+  it("takes over a new price and reports it with the old one", () => {
+    cartWith([1, 2], [2, 1]);
+    expect(sync([1, 2], [priced(1, 12_000), product(2)])).toEqual({
+      repriced: [{ productId: 1, name: "Product 1", oldPriceMinor: 10_000, newPriceMinor: 12_000 }],
+      removed: [],
+    });
+    expect(useCartStore.getState().items.map((i) => i.priceMinor)).toEqual([12_000, 10_000]);
+    expect(cartLines()).toEqual([
+      [1, 2],
+      [2, 1],
+    ]);
+  });
+
+  it("removes a line whose product no longer exists and reports it", () => {
+    cartWith([1, 2], [2, 1]);
+    const [, gone] = useCartStore.getState().items;
+    expect(sync([1, 2], [product(1)])).toEqual({ repriced: [], removed: [gone] });
+    expect(cartLines()).toEqual([[1, 2]]);
+  });
+
+  it("takes over a new name without reporting it, as it does not change the price", () => {
+    cartWith([1, 1]);
+    expect(sync([1], [{ ...product(1), name: "Renamed" }])).toBeUndefined();
+    expect(useCartStore.getState().items[0]?.name).toBe("Renamed");
+  });
+
+  it("keeps lines that were not checked, e.g. added while the check was in flight", () => {
+    cartWith([1, 1], [2, 1]);
+    expect(sync([1], [product(1)])).toBeUndefined();
+    expect(cartLines()).toEqual([
+      [1, 1],
+      [2, 1],
+    ]);
+  });
+
+  it("leaves the cart untouched when nothing changed", () => {
+    cartWith([1, 1], [2, 3]);
+    const { items } = useCartStore.getState();
+    expect(sync([1, 2], [product(2), product(1)])).toBeUndefined();
+    expect(useCartStore.getState().items).toBe(items);
   });
 });
 
