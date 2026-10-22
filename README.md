@@ -2,6 +2,8 @@
 
 A small order system built as the second-round assignment for a FAPI programmer position: a shop with a cart, a 3-step checkout, a thank-you page with live ČNB currency conversion, and an admin page.
 
+**Live demo: https://fapi-demo.neovate.cloud** (admin at [/admin](https://fapi-demo.neovate.cloud/admin), `admin` / `password`). Nothing is charged.
+
 > [!NOTE]
 > **A note on AI (EN)**
 >
@@ -191,7 +193,9 @@ docker build -t fapi-demo .
 docker run -p 3000:3000 -v fapi-data:/data fapi-demo   # http://localhost:3000
 ```
 
-On Railway: one service from this repo, a volume mounted at `/data`, and `TRUST_PROXY=true`.
+The live demo runs this image on a self-hosted [Dokploy](https://dokploy.com) server: an application built from this repo's `Dockerfile`, a volume mounted at `/data`, `TRUST_PROXY=1` (Traefik is the one proxy in front), and a domain on container port 3000 with a Let's Encrypt certificate.
+
+On Railway (same image): one service from this repo, a volume mounted at `/data`, and `TRUST_PROXY=true`.
 
 ## Security notes
 
