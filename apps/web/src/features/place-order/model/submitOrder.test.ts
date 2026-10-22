@@ -245,6 +245,37 @@ describe("submitOrder checks the cart against the catalogue first", () => {
     expect(keyOf(send, 1)).toBe(keyOf(send, 0));
   });
 
+  it("retries the order sent without an answer even while the catalogue is down, as the server knows it", async () => {
+    stubFetch({ "GET /api/products": catalogue(shelf) });
+    const send = newSend().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(order);
+    await expect(submitOrder(both, send)).rejects.toThrow("Failed to fetch");
+
+    stubFetch({ "GET /api/products": () => Promise.reject(new TypeError("Failed to fetch")) });
+    await expect(submitOrder(both, send)).resolves.toEqual({ order });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(keyOf(send, 1)).toBe(keyOf(send, 0));
+  });
+
+  it("shows a price change the server finds when that retry was never placed", async () => {
+    stubFetch({ "GET /api/products": catalogue(shelf) });
+    const send = newSend()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(priceChanged)
+      .mockResolvedValue(order);
+    await expect(submitOrder(both, send)).rejects.toThrow("Failed to fetch");
+    shelf[0] = { ...product(1), priceMinor: 12_000 };
+    stubFetch({ "GET /api/products": catalogue(shelf) });
+
+    await expect(submitOrder(both, send)).resolves.toEqual({
+      changes: {
+        repriced: [{ productId: 1, name: "Product 1", oldPriceMinor: 10_000, newPriceMinor: 12_000 }],
+        removed: [],
+      },
+    });
+    expect(keyOf(send, 1)).toBe(keyOf(send, 0));
+  });
+
   it("sends nothing and keeps the cart when the check fails", async () => {
     stubFetch({ "GET /api/products": () => Promise.reject(new TypeError("Failed to fetch")) });
     const send = newSend().mockResolvedValue(order);

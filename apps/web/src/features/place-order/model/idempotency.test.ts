@@ -151,6 +151,25 @@ describe("idempotencyKeyFor across a page reload", () => {
     expect(reloaded.idempotencyKeyFor(snapshot)).toBe(key);
   });
 
+  it("keeps the key of an attempt stored by the first release as { key, fingerprint }", async () => {
+    const key = randomUuid();
+    // That release fingerprinted the form as typed, spaces included; the server trims them.
+    const typed = { ...snapshot, customer: { ...snapshot.customer, firstName: "Jana " } };
+    sessionStorage.setItem(ATTEMPT_STORAGE_KEY, JSON.stringify({ fingerprint: fingerprintOf(typed), key }));
+
+    const reloaded = await reload();
+
+    const { expectedTotalMinor: _shownLater, ...sent } = snapshot;
+    expect(reloaded.pendingSnapshot()).toEqual(sent);
+    expect(reloaded.idempotencyKeyFor(snapshot)).toBe(key);
+  });
+
+  it("starts a new attempt when an old fingerprint is not one", async () => {
+    sessionStorage.setItem(ATTEMPT_STORAGE_KEY, JSON.stringify({ fingerprint: "[1,2]", key: randomUuid() }));
+    const reloaded = await reload();
+    expect(reloaded.pendingSnapshot()).toBeUndefined();
+  });
+
   it("works from memory when sessionStorage is blocked", async () => {
     const blocked = () => {
       throw new DOMException("The operation is insecure.", "SecurityError");

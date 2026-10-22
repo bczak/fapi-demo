@@ -12,6 +12,18 @@ type Attempt = z.infer<typeof attemptSchema>;
 /** Where the open attempt is kept, so a reload after a lost response retries with the same key. */
 export const ATTEMPT_STORAGE_KEY = "checkout-attempt";
 
+// The first release stored { key, fingerprint } instead, the fingerprint being fingerprintOf's JSON.
+// (Declared before `attempt`, which reads them while the module loads.)
+const fingerprintAttemptSchema = z.object({
+  key: createOrderSchema.shape.idempotencyKey,
+  fingerprint: z.string(),
+});
+const fingerprintPartsSchema = z.tuple([
+  z.array(z.tuple([z.string(), z.string()])),
+  z.string(),
+  z.array(z.tuple([z.number(), z.number()])),
+]);
+
 // In memory for the remounts (the cart sheet closed and reopened while a request is in flight) and
 // mirrored to sessionStorage for reloads. The snapshot holds the shipping details, so it stays
 // in this tab only and goes once the order is placed.
@@ -19,11 +31,27 @@ let attempt = restoreAttempt();
 
 function restoreAttempt(): Attempt | undefined {
   try {
-    return attemptSchema.safeParse(JSON.parse(sessionStorage.getItem(ATTEMPT_STORAGE_KEY) ?? "null")).data;
+    const stored: unknown = JSON.parse(sessionStorage.getItem(ATTEMPT_STORAGE_KEY) ?? "null");
+    return attemptSchema.safeParse(stored).data ?? fromFingerprint(stored);
   } catch {
     // Storage is blocked or holds something that is not JSON: start without an attempt.
     return undefined;
   }
+}
+
+/** Reads an attempt stored by the first release back as a snapshot, so its retry keeps the key. */
+function fromFingerprint(stored: unknown): Attempt | undefined {
+  const old = fingerprintAttemptSchema.safeParse(stored);
+  if (!old.success) return undefined;
+  const parts = fingerprintPartsSchema.safeParse(JSON.parse(old.data.fingerprint));
+  if (!parts.success) return undefined;
+  const [customer, currency, lines] = parts.data;
+  const snapshot = orderSnapshotSchema.safeParse({
+    customer: Object.fromEntries(customer),
+    currency,
+    items: lines.map(([productId, quantity]) => ({ productId, quantity })),
+  });
+  return snapshot.success ? { key: old.data.key, snapshot: snapshot.data } : undefined;
 }
 
 function saveAttempt(next: Attempt | undefined) {
