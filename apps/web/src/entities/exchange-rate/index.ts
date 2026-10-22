@@ -1,1 +1,1 @@
-export { useRates } from "./api/rates";
+export { usePrefetchRates, useRates } from "./api/rates";

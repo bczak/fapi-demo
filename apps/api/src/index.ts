@@ -9,9 +9,16 @@ import { createRatesService } from "./modules/rates/rates.service";
 const db = createDb(config.dbPath);
 seedProducts(db);
 
+const getRates = createRatesService();
+// Warm the cache, so the first customer does not wait for ČNB. A failure is retried after the service's
+// backoff (a minute); CZK orders work meanwhile.
+getRates().catch((e: unknown) =>
+  console.warn("ČNB rates not loaded at startup:", e instanceof Error ? e.message : e),
+);
+
 const app = createApp({
   db,
-  getRates: createRatesService(),
+  getRates,
   admin: { user: config.adminUser, password: config.adminPassword },
   clientKey: config.proxyHops > 0 ? forwardedAddress(config.proxyHops) : remoteAddress,
   webDist: config.webDist,

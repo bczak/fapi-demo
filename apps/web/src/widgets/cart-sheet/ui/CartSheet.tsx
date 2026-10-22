@@ -2,6 +2,7 @@ import { type Customer, formatCzk, type PaymentCurrency } from "@fapi/shared";
 import { ShoppingCart } from "lucide-react";
 import { useState } from "react";
 import { type CartChanges, CartTotals, mergeCartChanges, useCartCount, useCartStore } from "@/entities/cart";
+import { usePrefetchRates } from "@/entities/exchange-rate";
 import { CartQuantity } from "@/features/cart-quantity";
 import { PaymentStep, pendingSnapshot, refreshCart, ShippingForm } from "@/features/place-order";
 import { Badge } from "@/shared/ui/badge";
@@ -36,12 +37,15 @@ export function CartSheet() {
   const [changes, setChanges] = useState<CartChanges>();
   const count = useCartCount();
   const items = useCartStore((s) => s.items);
+  const prefetchRates = usePrefetchRates();
 
   const heading = HEADINGS[step];
 
   function changeOpen(next: boolean) {
     setOpen(next);
     if (!next) return;
+    // The payment step needs the ČNB rates; loading them now usually has them ready by then.
+    prefetchRates();
     // After a reload: the order sent without an answer fills in the checkout again, so paying
     // repeats the same request (and its key) instead of placing a second order.
     const pending = pendingSnapshot();

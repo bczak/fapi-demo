@@ -273,6 +273,20 @@ describe("checkout in the cart sheet", () => {
   });
 });
 
+describe("cart sheet: exchange rates", () => {
+  it("starts loading them as soon as the cart opens, before the payment step", async () => {
+    const { user, fetchMock } = setup();
+    await addAll(user);
+    const ratesRequests = () => fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/rates"));
+    expect(ratesRequests()).toHaveLength(0);
+
+    await openCart(user);
+
+    await waitFor(() => expect(ratesRequests()).toHaveLength(1));
+    expect(screen.getByRole("button", { name: "Continue to shipping" })).toBeInTheDocument();
+  });
+});
+
 describe("cart sheet: prices that changed after the products were added", () => {
   it("shows the new price when the sheet opens", async () => {
     const { user } = setup();

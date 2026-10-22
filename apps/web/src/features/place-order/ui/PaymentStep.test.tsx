@@ -382,6 +382,28 @@ describe("PaymentStep: without exchange rates, after a reload", () => {
   });
 });
 
+describe("PaymentStep: while the exchange rates load", () => {
+  it("shows a spinner instead of the EUR and USD prices, without greying them out, then the prices", async () => {
+    const answer = deferred<Response>();
+    serve({ products: catalogue([product(1), product(2)]), rates: () => answer.promise });
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading the live ČNB exchange rates…");
+    expect(screen.getAllByText("Loading rate…")).toHaveLength(2);
+    const eurRow = screen.getByRole("radio", { name: /EUR/ }).closest("label");
+    expect(eurRow).not.toHaveClass("has-disabled:opacity-50");
+    expect(screen.getByRole("group")).toHaveAttribute("aria-busy", "true");
+
+    await act(async () => {
+      answer.resolve(Response.json(rates));
+    });
+
+    await waitFor(() => expect(screen.queryByText("Loading rate…")).not.toBeInTheDocument());
+    expect(screen.getByRole("radio", { name: /EUR/ })).toBeEnabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("group")).toHaveAttribute("aria-busy", "false");
+  });
+});
+
 describe("PaymentStep: while the request is pending", () => {
   it("locks the cart, the currencies, Back and Pay, and sends one request only", async () => {
     const response = deferred<Response>();

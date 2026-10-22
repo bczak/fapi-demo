@@ -7,6 +7,7 @@ import {
   quotePayment,
 } from "@fapi/shared";
 import { useNavigate } from "@tanstack/react-router";
+import { LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
   type CartChanges,
@@ -18,6 +19,7 @@ import {
 import { useRates } from "@/entities/exchange-rate";
 import { useCreateOrder } from "@/entities/order";
 import { ApiError, ApiTimeoutError } from "@/shared/api/client";
+import { cn } from "@/shared/lib/utils";
 import { Button } from "@/shared/ui/button";
 import { repeatsAttempt } from "../model/idempotency";
 import { type ConfirmedOrder, type SubmitResult, submitOrder } from "../model/submitOrder";
@@ -100,28 +102,47 @@ export function PaymentStep({ customer, currency, onCurrencyChange, onCartChange
     <div className="grid gap-6">
       <CartTotals />
 
-      <fieldset className="grid gap-2">
+      <fieldset className="grid gap-2" aria-busy={rates.isPending}>
         <legend className="mb-2 text-sm font-medium">Payment currency</legend>
-        {options.map(({ code, quote, retry: retryable }) => (
-          <label
-            key={code}
-            className="flex cursor-pointer items-center justify-between rounded-lg border p-4 has-checked:border-primary has-checked:bg-accent has-disabled:cursor-not-allowed has-disabled:opacity-50 has-focus-visible:ring-[3px] has-focus-visible:ring-ring/50"
-          >
-            <input
-              type="radio"
-              name="currency"
-              value={code}
-              className="sr-only"
-              checked={currency === code}
-              disabled={!(quote || retryable) || submitting}
-              onChange={() => onCurrencyChange(code)}
-            />
-            <span className="font-medium">{code}</span>
-            <span className="tabular-nums">
-              {quote ? formatMinor(quote.totalMinor, code) : rates.isPending ? "…" : "Unavailable"}
-            </span>
-          </label>
-        ))}
+        {options.map(({ code, quote, retry: retryable }) => {
+          const loading = !quote && rates.isPending;
+          return (
+            <label
+              key={code}
+              className={cn(
+                "flex cursor-pointer items-center justify-between rounded-lg border p-4 has-checked:border-primary has-checked:bg-accent has-focus-visible:ring-[3px] has-focus-visible:ring-ring/50",
+                // Still loading is not unavailable: no dimming, just a spinner.
+                loading ? "cursor-wait" : "has-disabled:cursor-not-allowed has-disabled:opacity-50",
+              )}
+            >
+              <input
+                type="radio"
+                name="currency"
+                value={code}
+                className="sr-only"
+                checked={currency === code}
+                disabled={!(quote || retryable) || submitting}
+                onChange={() => onCurrencyChange(code)}
+              />
+              <span className="font-medium">{code}</span>
+              {loading ? (
+                <span className="text-muted-foreground flex items-center gap-1.5 text-sm">
+                  <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                  Loading rate…
+                </span>
+              ) : (
+                <span className="tabular-nums">
+                  {quote ? formatMinor(quote.totalMinor, code) : "Unavailable"}
+                </span>
+              )}
+            </label>
+          );
+        })}
+        {rates.isPending && (
+          <p role="status" className="text-muted-foreground text-xs">
+            Loading the live ČNB exchange rates…
+          </p>
+        )}
         {selected?.rateDate ? (
           <p className="text-muted-foreground text-xs">
             Live ČNB rate from {formatRateDate(selected.rateDate)}: 1 {selected.currency} ={" "}
