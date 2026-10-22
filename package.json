@@ -1,0 +1,27 @@
+{
+  "name": "fapi-demo",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.3",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "bun run --filter @fapi/api dev",
+    "dev:web": "bun run --filter @fapi/web dev",
+    "test": "bun run --filter '@fapi/*' test",
+    "typecheck": "bun run --filter '@fapi/*' typecheck",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "doctor": "react-doctor --yes apps/web"
+  },
+  "trustedDependencies": [
+    "better-sqlite3",
+    "esbuild"
+  ],
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.2",
+    "react-doctor": "^0.9.18"
+  }
+}

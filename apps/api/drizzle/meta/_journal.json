@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792612582815,
+      "tag": "0000_wise_domino",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792620189353,
+      "tag": "0001_rare_nomad",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792621781476,
+      "tag": "0002_volatile_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792622837289,
+      "tag": "0003_mysterious_shard",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792626253862,
+      "tag": "0004_panoramic_kid_colt",
+      "breakpoints": true
+    }
+  ]
+}

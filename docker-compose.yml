@@ -1,0 +1,41 @@
+# Local development: source is bind-mounted, both servers reload on change.
+x-dev: &dev
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
+
+services:
+  api:
+    <<: *dev
+    command: bun run dev:api
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DB_PATH: /app/data/shop.db
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-password}
+    volumes:
+      - .:/app
+      # Keep the dependencies installed in the image, not the host's.
+      - node_modules:/app/node_modules
+      - api_data:/app/data
+
+  web:
+    <<: *dev
+    command: bun run dev:web
+    ports:
+      - "5173:5173"
+    environment:
+      API_PROXY_TARGET: http://api:3000
+      # Extra host names for the dev server (e.g. a tunnel), comma separated; set it in a local .env.
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  node_modules:
+  api_data:
